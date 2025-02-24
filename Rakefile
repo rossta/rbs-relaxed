@@ -306,9 +306,9 @@ task :test_generate_stdlib do
   sh "ruby -c /tmp/Thread_Mutex_test.rb"
 end
 
-Rake::Task[:release].enhance do
-  Rake::Task[:"release:note"].invoke
-end
+# Rake::Task[:release].enhance do
+#   Rake::Task[:"release:note"].invoke
+# end
 
 namespace :release do
   desc "Explain the post-release steps automatically"
