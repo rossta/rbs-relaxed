@@ -9,7 +9,7 @@ Gem::Specification.new do |spec|
   spec.authors       = ["Soutaro Matsumoto"]
   spec.email         = ["matsumoto@soutaro.com"]
 
-  spec.summary       = %q{Type signature for Ruby.}
+  spec.summary       = %q{Type signature for Ruby. (Fork with relaxed version constraints)}
   spec.description   = %q{RBS is the language for type signatures for Ruby and standard library definitions.}
   spec.homepage      = "https://github.com/ruby/rbs"
   spec.licenses      = ['BSD-2-Clause', 'Ruby']
