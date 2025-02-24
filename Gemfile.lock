@@ -2,7 +2,6 @@ PATH
   remote: .
   specs:
     rbs-relaxed (3.9.0.dev)
-      logger
 
 PATH
   remote: test/assets/test-gem
