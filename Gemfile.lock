@@ -2,6 +2,7 @@ PATH
   remote: .
   specs:
     rbs-relaxed (3.9.4)
+    rbs-relaxed (3.9.4.0)
 
 PATH
   remote: test/assets/test-gem
