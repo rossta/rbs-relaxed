@@ -4,7 +4,7 @@ $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
 require "rbs/version"
 
 Gem::Specification.new do |spec|
-  spec.name          = "rbs"
+  spec.name          = "rbs-relaxed"
   spec.version       = RBS::VERSION
   spec.authors       = ["Soutaro Matsumoto"]
   spec.email         = ["matsumoto@soutaro.com"]
@@ -45,5 +45,4 @@ Gem::Specification.new do |spec|
   spec.executables   = spec.files.grep(%r{^exe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
   spec.required_ruby_version = ">= 3.1"
-  spec.add_dependency "logger"
 end
