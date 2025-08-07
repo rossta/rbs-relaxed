@@ -61,10 +61,17 @@ typedef struct {
 } method_params;
 
 static VALUE EMPTY_ARRAY;
+static VALUE EMPTY_HASH;
 
 static inline void melt_array(VALUE *array) {
   if (*array == EMPTY_ARRAY) {
     *array = rb_ary_new();
+  }
+}
+
+static inline void melt_hash(VALUE *hash) {
+  if (*hash == EMPTY_HASH) {
+    *hash = rb_hash_new();
   }
 }
 
@@ -343,7 +350,7 @@ static VALUE parse_keyword_key(parserstate *state) {
 /*
   keyword ::= {} keyword `:` <function_param>
 */
-static void parse_keyword(parserstate *state, VALUE keywords, VALUE memo) {
+static void parse_keyword(parserstate *state, VALUE *keywords, VALUE memo) {
   VALUE key = parse_keyword_key(state);
 
   if (!NIL_P(rb_hash_aref(memo, key))) {
@@ -359,7 +366,8 @@ static void parse_keyword(parserstate *state, VALUE keywords, VALUE memo) {
   parser_advance_assert(state, pCOLON);
   VALUE param = parse_function_param(state);
 
-  rb_hash_aset(keywords, key, param);
+  melt_hash(keywords);
+  rb_hash_aset(*keywords, key, param);
 
   return;
 }
@@ -466,7 +474,7 @@ PARSE_OPTIONAL_PARAMS:
         parser_advance(state);
 
         if (is_keyword(state)) {
-          parse_keyword(state, params->optional_keywords, memo);
+          parse_keyword(state, &params->optional_keywords, memo);
           parser_advance_if(state, pCOMMA);
           goto PARSE_KEYWORDS;
         }
@@ -533,7 +541,7 @@ PARSE_KEYWORDS:
     case pQUESTION:
       parser_advance(state);
       if (is_keyword(state)) {
-        parse_keyword(state, params->optional_keywords, memo);
+        parse_keyword(state, &params->optional_keywords, memo);
       } else {
         raise_syntax_error(
           state,
@@ -556,7 +564,7 @@ PARSE_KEYWORDS:
     case tBANGIDENT:
     KEYWORD_CASES
       if (is_keyword(state)) {
-        parse_keyword(state, params->required_keywords, memo);
+        parse_keyword(state, &params->required_keywords, memo);
       } else {
         raise_syntax_error(
           state,
@@ -613,8 +621,8 @@ static void initialize_method_params(method_params *params){
     .optional_positionals = EMPTY_ARRAY,
     .rest_positionals = Qnil,
     .trailing_positionals = EMPTY_ARRAY,
-    .required_keywords = rb_hash_new(),
-    .optional_keywords = rb_hash_new(),
+    .required_keywords = EMPTY_HASH,
+    .optional_keywords = EMPTY_HASH,
     .rest_keywords = Qnil,
   };
 }
@@ -653,16 +661,16 @@ static void parse_function(parserstate *state, VALUE *function, VALUE *block, VA
     parser_advance_assert(state, pRPAREN);
   }
 
-  // Untyped method parameter means it cannot have block
-  if (rbs_is_untyped_params(&params)) {
-    if (state->next_token.type != pARROW) {
-      raise_syntax_error(state, state->next_token2, "A method type with untyped method parameter cannot have block");
-    }
-  }
-
   // Passing NULL to function_self_type means the function itself doesn't accept self type binding. (== method type)
   if (function_self_type) {
     *function_self_type = parse_self_type_binding(state);
+  } else {
+    // Parsing method type. untyped_params means it cannot have a block
+    if (rbs_is_untyped_params(&params)) {
+      if (state->next_token.type != pARROW) {
+        raise_syntax_error(state, state->next_token2, "A method type with untyped method parameter cannot have block");
+      }
+    }
   }
 
   VALUE required = Qtrue;
@@ -1088,26 +1096,24 @@ static VALUE parse_simple(parserstate *state) {
                  | {} <optional>
 */
 static VALUE parse_intersection(parserstate *state) {
-  range rg;
-  rg.start = state->next_token.range.start;
-
+  position start = state->next_token.range.start;
   VALUE type = parse_optional(state);
-  VALUE intersection_types = rb_ary_new();
+  if (state->next_token.type != pAMP) {
+    return type;
+  }
 
+  VALUE intersection_types = rb_ary_new();
   rb_ary_push(intersection_types, type);
   while (state->next_token.type == pAMP) {
     parser_advance(state);
     rb_ary_push(intersection_types, parse_optional(state));
   }
-
-  rg.end = state->current_token.range.end;
-
-  if (rb_array_len(intersection_types) > 1) {
-    VALUE location = rbs_new_location(state->buffer, rg);
-    type = rbs_intersection(intersection_types, location);
-  }
-
-  return type;
+  range rg = (range) {
+    .start = start,
+    .end = state->current_token.range.end,
+  };
+  VALUE location = rbs_new_location(state->buffer, rg);
+  return rbs_intersection(intersection_types, location);
 }
 
 /*
@@ -1115,26 +1121,24 @@ static VALUE parse_intersection(parserstate *state) {
           | {} <intersection>
 */
 VALUE parse_type(parserstate *state) {
-  range rg;
-  rg.start = state->next_token.range.start;
-
+  position start = state->next_token.range.start;
   VALUE type = parse_intersection(state);
-  VALUE union_types = rb_ary_new();
+  if (state->next_token.type != pBAR) {
+    return type;
+  }
 
+  VALUE union_types = rb_ary_new();
   rb_ary_push(union_types, type);
   while (state->next_token.type == pBAR) {
     parser_advance(state);
     rb_ary_push(union_types, parse_intersection(state));
   }
-
-  rg.end = state->current_token.range.end;
-
-  if (rb_array_len(union_types) > 1) {
-    VALUE location = rbs_new_location(state->buffer, rg);
-    type = rbs_union(union_types, location);
-  }
-
-  return type;
+  range rg = (range) {
+    .start = start,
+    .end = state->current_token.range.end,
+  };
+  VALUE location = rbs_new_location(state->buffer, rg);
+  return rbs_union(union_types, location);
 }
 
 /*
@@ -1314,7 +1318,7 @@ VALUE parse_method_type(parserstate *state) {
 /*
   global_decl ::= {tGIDENT} `:` <type>
 */
-static VALUE parse_global_decl(parserstate *state) {
+static VALUE parse_global_decl(parserstate *state, VALUE annotations) {
   range decl_range;
   decl_range.start = state->current_token.range.start;
 
@@ -1334,13 +1338,13 @@ static VALUE parse_global_decl(parserstate *state) {
   rbs_loc_add_required_child(loc, INTERN("name"), name_range);
   rbs_loc_add_required_child(loc, INTERN("colon"), colon_range);
 
-  return rbs_ast_decl_global(typename, type, location, comment);
+  return rbs_ast_decl_global(typename, type, location, comment, annotations);
 }
 
 /*
   const_decl ::= {const_name} `:` <type>
 */
-static VALUE parse_const_decl(parserstate *state) {
+static VALUE parse_const_decl(parserstate *state, VALUE annotations) {
   range decl_range;
 
   decl_range.start = state->current_token.range.start;
@@ -1361,7 +1365,7 @@ static VALUE parse_const_decl(parserstate *state) {
   rbs_loc_add_required_child(loc, INTERN("name"), name_range);
   rbs_loc_add_required_child(loc, INTERN("colon"), colon_range);
 
-  return rbs_ast_decl_constant(typename, type, location, comment);
+  return rbs_ast_decl_constant(typename, type, location, comment, annotations);
 }
 
 /*
@@ -2465,7 +2469,7 @@ static VALUE parse_module_decl(parserstate *state, position comment_pos, VALUE a
     rbs_loc_add_required_child(loc, INTERN("eq"), eq_range);
     rbs_loc_add_optional_child(loc, INTERN("old_name"), old_name_range);
 
-    return rbs_ast_decl_module_alias(module_name, old_name, location, comment);
+    return rbs_ast_decl_module_alias(module_name, old_name, location, comment, annotations);
   } else {
     return parse_module_decl0(state, keyword_range, module_name, module_name_range, comment, annotations);
   }
@@ -2582,7 +2586,7 @@ static VALUE parse_class_decl(parserstate *state, position comment_pos, VALUE an
     rbs_loc_add_required_child(loc, INTERN("eq"), eq_range);
     rbs_loc_add_optional_child(loc, INTERN("old_name"), old_name_range);
 
-    return rbs_ast_decl_class_alias(class_name, old_name, location, comment);
+    return rbs_ast_decl_class_alias(class_name, old_name, location, comment, annotations);
   } else {
     return parse_class_decl0(state, keyword_range, class_name, class_name_range, comment, annotations);
   }
@@ -2602,11 +2606,11 @@ static VALUE parse_nested_decl(parserstate *state, const char *nested_in, positi
   switch (state->current_token.type) {
   case tUIDENT:
   case pCOLON2: {
-    decl = parse_const_decl(state);
+    decl = parse_const_decl(state, annotations);
     break;
   }
   case tGIDENT: {
-    decl = parse_global_decl(state);
+    decl = parse_global_decl(state, annotations);
     break;
   }
   case kTYPE: {
@@ -2648,10 +2652,10 @@ static VALUE parse_decl(parserstate *state) {
   switch (state->current_token.type) {
   case tUIDENT:
   case pCOLON2: {
-    return parse_const_decl(state);
+    return parse_const_decl(state, annotations);
   }
   case tGIDENT: {
-    return parse_global_decl(state);
+    return parse_global_decl(state, annotations);
   }
   case kTYPE: {
     return parse_type_decl(state, annot_pos, annotations);
@@ -2962,9 +2966,14 @@ rbsparser_lex(VALUE self, VALUE buffer, VALUE end_pos) {
 void rbs__init_parser(void) {
   RBS_Parser = rb_define_class_under(RBS, "Parser", rb_cObject);
   rb_gc_register_mark_object(RBS_Parser);
+
   VALUE empty_array = rb_obj_freeze(rb_ary_new());
   rb_gc_register_mark_object(empty_array);
   EMPTY_ARRAY = empty_array;
+
+  VALUE empty_hash = rb_obj_freeze(rb_hash_new());
+  rb_gc_register_mark_object(empty_hash);
+  EMPTY_HASH = empty_hash;
 
   rb_define_singleton_method(RBS_Parser, "_parse_type", rbsparser_parse_type, 5);
   rb_define_singleton_method(RBS_Parser, "_parse_method_type", rbsparser_parse_method_type, 5);

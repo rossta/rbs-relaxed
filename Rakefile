@@ -11,11 +11,25 @@ bin = File.join(__dir__, "bin")
 
 Rake::ExtensionTask.new("rbs_extension")
 
-Rake::TestTask.new(:test => :compile) do |t|
+test_config = lambda do |t|
   t.libs << "test"
   t.libs << "lib"
   t.test_files = FileList["test/**/*_test.rb"].reject do |path|
     path =~ %r{test/stdlib/}
+  end
+end
+
+Rake::TestTask.new(test: :compile, &test_config)
+
+unless Gem.win_platform?
+  begin
+    require "ruby_memcheck"
+
+    namespace :test do
+      RubyMemcheck::TestTask.new(valgrind: :compile, &test_config)
+    end
+  rescue LoadError => exn
+    STDERR.puts "🚨🚨🚨🚨 Skipping RubyMemcheck: #{exn.inspect} 🚨🚨🚨🚨"
   end
 end
 
@@ -112,7 +126,7 @@ end
 
 task :stdlib_test => :compile do
   test_files = FileList["test/stdlib/**/*_test.rb"].reject do |path|
-    path =~ %r{Ractor} || path =~ %r{Encoding}
+    path =~ %r{Ractor} || path =~ %r{Encoding} || path =~ %r{CGI_test}
   end
 
   if ENV["RANDOMIZE_STDLIB_TEST_ORDER"] == "true"
@@ -121,6 +135,7 @@ task :stdlib_test => :compile do
 
   sh "#{ruby} -Ilib #{bin}/test_runner.rb #{test_files.join(' ')}"
   # TODO: Ractor tests need to be run in a separate process
+  sh "#{ruby} -Ilib #{bin}/test_runner.rb test/stdlib/CGI_test.rb"
   sh "#{ruby} -Ilib #{bin}/test_runner.rb test/stdlib/Ractor_test.rb"
   sh "#{ruby} -Ilib #{bin}/test_runner.rb test/stdlib/Encoding_test.rb"
 end
