@@ -74,7 +74,7 @@ module RBS
             self.class.hash ^ name.hash ^ args.hash
           end
 
-          def to_json(state = _ = nil)
+          def to_json(state = nil)
             {
               name: name,
               args: args,
@@ -130,7 +130,7 @@ module RBS
           self.class.hash ^ name.hash ^ type_params.hash ^ super_class.hash ^ members.hash
         end
 
-        def to_json(state = _ = nil)
+        def to_json(state = nil)
           {
             declaration: :class,
             name: name,
@@ -166,7 +166,7 @@ module RBS
             self.class.hash ^ name.hash ^ args.hash ^ location.hash
           end
 
-          def to_json(state = _ = nil)
+          def to_json(state = nil)
             {
               name: name,
               args: args,
@@ -231,7 +231,7 @@ module RBS
           self.class.hash ^ name.hash ^ type_params.hash ^ self_types.hash ^ members.hash
         end
 
-        def to_json(state = _ = nil)
+        def to_json(state = nil)
           {
             declaration: :module,
             name: name,
@@ -288,7 +288,7 @@ module RBS
           self.class.hash ^ type_params.hash ^ members.hash
         end
 
-        def to_json(state = _ = nil)
+        def to_json(state = nil)
           {
             declaration: :interface,
             name: name,
@@ -331,7 +331,7 @@ module RBS
           self.class.hash ^ name.hash ^ type_params.hash ^ type.hash
         end
 
-        def to_json(state = _ = nil)
+        def to_json(state = nil)
           {
             declaration: :alias,
             name: name,
@@ -349,12 +349,14 @@ module RBS
         attr_reader :type
         attr_reader :location
         attr_reader :comment
+        attr_reader :annotations
 
-        def initialize(name:, type:, location:, comment:)
+        def initialize(name:, type:, location:, comment:, annotations: [])
           @name = name
           @type = type
           @location = location
           @comment = comment
+          @annotations = annotations || []
         end
 
         def ==(other)
@@ -369,7 +371,7 @@ module RBS
           self.class.hash ^ name.hash ^ type.hash
         end
 
-        def to_json(state = _ = nil)
+        def to_json(state = nil)
           {
             declaration: :constant,
             name: name,
@@ -385,12 +387,14 @@ module RBS
         attr_reader :type
         attr_reader :location
         attr_reader :comment
+        attr_reader :annotations
 
-        def initialize(name:, type:, location:, comment:)
+        def initialize(name:, type:, location:, comment:, annotations: [])
           @name = name
           @type = type
           @location = location
           @comment = comment
+          @annotations = annotations
         end
 
         def ==(other)
@@ -405,7 +409,7 @@ module RBS
           self.class.hash ^ name.hash ^ type.hash
         end
 
-        def to_json(state = _ = nil)
+        def to_json(state = nil)
           {
             declaration: :global,
             name: name,
@@ -417,13 +421,14 @@ module RBS
       end
 
       class AliasDecl < Base
-        attr_reader :new_name, :old_name, :location, :comment
+        attr_reader :new_name, :old_name, :location, :comment, :annotations
 
-        def initialize(new_name:, old_name:, location:, comment:)
+        def initialize(new_name:, old_name:, location:, comment:, annotations: [])
           @new_name = new_name
           @old_name = old_name
           @location = location
           @comment = comment
+          @annotations = annotations
         end
 
         def ==(other)
@@ -440,7 +445,7 @@ module RBS
       end
 
       class ClassAlias < AliasDecl
-        def to_json(state = _ = nil)
+        def to_json(state = nil)
           {
             declaration: :class_alias,
             new_name: new_name,
@@ -452,7 +457,7 @@ module RBS
       end
 
       class ModuleAlias < AliasDecl
-        def to_json(state = _ = nil)
+        def to_json(state = nil)
           {
             declaration: :module_alias,
             new_name: new_name,

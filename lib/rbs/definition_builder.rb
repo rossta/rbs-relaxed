@@ -82,7 +82,7 @@ module RBS
       AST::TypeParam.application(params, args) || Substitution.new()
     end
 
-    def define_instance(definition, type_name, subst)
+    def define_instance(definition, type_name, subst, define_class_vars:)
       one_ancestors = ancestor_builder.one_instance_ancestors(type_name)
       methods = method_builder.build_instance(type_name)
 
@@ -104,7 +104,7 @@ module RBS
           validate_type_presence(arg)
         end
 
-        define_instance(definition, mod.name, subst + tapp_subst(mod.name, mod.args))
+        define_instance(definition, mod.name, subst + tapp_subst(mod.name, mod.args), define_class_vars: define_class_vars)
       end
 
       all_interfaces = one_ancestors.each_included_interface.flat_map do |interface|
@@ -120,16 +120,16 @@ module RBS
           validate_type_presence(arg)
         end
 
-        define_instance(definition, mod.name, subst + tapp_subst(mod.name, mod.args))
+        define_instance(definition, mod.name, subst + tapp_subst(mod.name, mod.args), define_class_vars: define_class_vars)
       end
 
       entry = env.class_decls[type_name] or raise "Unknown name for build_instance: #{type_name}"
       args = entry.type_params.map {|param| Types::Variable.new(name: param.name, location: param.location) }
 
-      entry.decls.each do |d|
-        subst_ = subst + Substitution.build(d.decl.type_params.each.map(&:name), args)
+      entry.each_decl do |decl|
+        subst_ = subst + Substitution.build(decl.type_params.each.map(&:name), args)
 
-        d.decl.members.each do |member|
+        decl.members.each do |member|
           case member
           when AST::Members::AttrReader, AST::Members::AttrAccessor, AST::Members::AttrWriter
             if member.kind == :instance
@@ -145,23 +145,48 @@ module RBS
                   type_name,
                   definition.instance_variables,
                   name: ivar_name,
-                  type: member.type.sub(subst_)
+                  type: member.type.sub(subst_),
+                  source: member
                 )
               end
             end
 
-          when AST::Members::InstanceVariable
-            InstanceVariableDuplicationError.check!(variables: definition.instance_variables, member: member, type_name: type_name)
+          when AST::Ruby::Members::AttrReaderMember, AST::Ruby::Members::AttrWriterMember, AST::Ruby::Members::AttrAccessorMember
+            member.names.each do |name|
+              ivar_name = :"@#{name}"
+              attr_type = member.type || Types::Bases::Any.new(location: nil)
+
+              insert_variable(
+                type_name,
+                definition.instance_variables,
+                name: ivar_name,
+                type: attr_type,
+                source: member
+              )
+            end
+
+          when AST::Ruby::Members::InstanceVariableMember
             insert_variable(
               type_name,
               definition.instance_variables,
               name: member.name,
-              type: member.type.sub(subst_)
+              type: member.type,
+              source: member
+            )
+
+          when AST::Members::InstanceVariable
+            insert_variable(
+              type_name,
+              definition.instance_variables,
+              name: member.name,
+              type: member.type.sub(subst_),
+              source: member
             )
 
           when AST::Members::ClassVariable
-            ClassVariableDuplicationError.check!(variables: definition.class_variables, member: member, type_name: type_name)
-            insert_variable(type_name, definition.class_variables, name: member.name, type: member.type)
+            if define_class_vars
+              insert_variable(type_name, definition.class_variables, name: member.name, type: member.type, source: member)
+            end
           end
         end
       end
@@ -172,7 +197,7 @@ module RBS
 
       try_cache(type_name, cache: instance_cache) do
         entry = env.class_decls[type_name] or raise "Unknown name for build_instance: #{type_name}"
-        ensure_namespace!(type_name.namespace, location: entry.decls[0].decl.location)
+        ensure_namespace!(type_name.namespace, location: entry.primary_decl.location)
 
         ancestors = ancestor_builder.instance_ancestors(type_name)
         args = entry.type_params.map {|param| Types::Variable.new(name: param.name, location: param.location) }
@@ -216,13 +241,13 @@ module RBS
                 if ans.name.interface?
                   define_interface(definition, ans.name, subst)
                 else
-                  define_instance(definition, ans.name, subst)
+                  define_instance(definition, ans.name, subst, define_class_vars: true)
                 end
               end
             end
           end
 
-          define_instance(definition, type_name, Substitution.new)
+          define_instance(definition, type_name, Substitution.new, define_class_vars: true)
         end
       end
     end
@@ -232,7 +257,7 @@ module RBS
     def build_singleton0(type_name)
       try_cache type_name, cache: singleton0_cache do
         entry = env.class_decls[type_name] or raise "Unknown name for build_singleton0: #{type_name}"
-        ensure_namespace!(type_name.namespace, location: entry.decls[0].decl.location)
+        ensure_namespace!(type_name.namespace, location: entry.primary_decl.location)
 
         ancestors = ancestor_builder.singleton_ancestors(type_name)
         self_type = Types::ClassSingleton.new(name: type_name, location: nil)
@@ -251,7 +276,6 @@ module RBS
 
             definition.methods.merge!(defn.methods)
             definition.instance_variables.merge!(defn.instance_variables)
-            definition.class_variables.merge!(defn.class_variables)
           end
 
           one_ancestors.each_extended_module do |mod|
@@ -260,7 +284,7 @@ module RBS
             end
 
             subst = tapp_subst(mod.name, mod.args)
-            define_instance(definition, mod.name, subst)
+            define_instance(definition, mod.name, subst, define_class_vars: false)
           end
 
           all_interfaces = one_ancestors.each_extended_interface.flat_map do |interface|
@@ -271,8 +295,8 @@ module RBS
           interface_methods = interface_methods(all_interfaces)
           import_methods(definition, type_name, methods, interface_methods, Substitution.new, nil)
 
-          entry.decls.each do |d|
-            d.decl.members.each do |member|
+          entry.each_decl do |decl|
+            decl.members.each do |member|
               case member
               when AST::Members::AttrReader, AST::Members::AttrAccessor, AST::Members::AttrWriter
                 if member.kind == :singleton
@@ -284,20 +308,18 @@ module RBS
                               end
 
                   if ivar_name
-                    insert_variable(type_name, definition.instance_variables, name: ivar_name, type: member.type)
+                    insert_variable(type_name, definition.instance_variables, name: ivar_name, type: member.type, source: member)
                   end
                 end
 
               when AST::Members::ClassInstanceVariable
-                ClassInstanceVariableDuplicationError.check!(variables: definition.instance_variables, member: member, type_name: type_name)
-                insert_variable(type_name, definition.instance_variables, name: member.name, type: member.type)
-
-              when AST::Members::ClassVariable
-                ClassVariableDuplicationError.check!(variables: definition.class_variables, member: member, type_name: type_name)
-                insert_variable(type_name, definition.class_variables, name: member.name, type: member.type)
+                insert_variable(type_name, definition.instance_variables, name: member.name, type: member.type, source: member)
               end
             end
           end
+
+          instance_definition = build_instance(type_name)
+          definition.class_variables.replace(instance_definition.class_variables)
         end
       end
     end
@@ -307,7 +329,7 @@ module RBS
 
       try_cache type_name, cache: singleton_cache do
         entry = env.class_decls[type_name] or raise "Unknown name for build_singleton: #{type_name}"
-        ensure_namespace!(type_name.namespace, location: entry.decls[0].decl.location)
+        ensure_namespace!(type_name.namespace, location: entry.primary_decl.location)
 
         ancestors = ancestor_builder.singleton_ancestors(type_name)
         self_type = Types::ClassSingleton.new(name: type_name, location: nil)
@@ -376,6 +398,19 @@ module RBS
                         .update(type_params: class_params + method_type.type_params)
                     end
 
+                    method_type = method_type.map_type do |type|
+                      case type
+                      when Types::Bases::Self
+                        Types::ClassInstance.new(
+                          name: type_name,
+                          args: entry.type_params.map {|param| Types::Variable.new(name: param.name, location: param.location) },
+                          location: nil
+                        )
+                      else
+                        type
+                      end
+                    end
+
                     method_type = method_type.update(
                       type: method_type.type.with_return_type(
                         Types::ClassInstance.new(
@@ -390,12 +425,14 @@ module RBS
                       type: method_type,
                       member: initialize_def.member,
                       defined_in: initialize_def.defined_in,
-                      implemented_in: initialize_def.implemented_in,
-                      overload_annotations: initialize_def.overload_annotations
-                    )
+                      implemented_in: initialize_def.implemented_in
+                    ).tap do |type_def|
+                      type_def.overload_annotations.replace(initialize_def.overload_annotations)
+                    end
                   end,
                   accessibility: :public,
-                  alias_of: nil
+                  alias_of: nil,
+                  alias_member: nil
                 )
 
                 definition.methods[:new] = typed_new
@@ -451,6 +488,10 @@ module RBS
         case decl
         when AST::Declarations::Class
           decl.super_class&.location
+        when AST::Ruby::Declarations::ClassDecl
+          nil
+        else
+          raise "Unexpected `:super` source location with #{decl.class}"
         end
       else
         source.location
@@ -470,7 +511,7 @@ module RBS
           validate_params_with(type_params, result: result) do |param|
             decl = case entry = definition.entry
                    when Environment::ModuleEntry, Environment::ClassEntry
-                     entry.primary.decl
+                     entry.primary_decl
                    when Environment::SingleEntry
                      entry.decl
                    end
@@ -539,12 +580,55 @@ module RBS
       end
     end
 
-    def insert_variable(type_name, variables, name:, type:)
+    def insert_variable(type_name, variables, name:, type:, source:)
       variables[name] = Definition::Variable.new(
         parent_variable: variables[name],
         type: type,
-        declared_in: type_name
+        declared_in: type_name,
+        source: source
       )
+
+      validate_variable(variables[name])
+    end
+
+    def validate_variable(var)
+      return unless var.parent_variable
+
+      # Ignore attrs
+      variables = [] #: Array[Definition::Variable]
+      tmp_var = var
+      while tmp_var
+        case tmp_var.source
+        when AST::Members::AttrReader, AST::Members::AttrWriter, AST::Members::AttrAccessor
+          # nop
+        when AST::Ruby::Members::AttrReaderMember, AST::Ruby::Members::AttrWriterMember, AST::Ruby::Members::AttrAccessorMember
+          # nop
+        else
+          variables << tmp_var
+        end
+
+        tmp_var = tmp_var.parent_variable
+      end
+
+      # Duplicates should be eliminated, so there can't be more than 3.
+      return unless variables.length == 2
+
+      l, r = variables #: [Definition::Variable, Definition::Variable]
+
+      case l.source
+      when AST::Members::InstanceVariable
+        if r.source.instance_of?(AST::Members::InstanceVariable) && l.declared_in == r.declared_in
+          raise InstanceVariableDuplicationError.new(type_name: l.declared_in, variable_name: l.source.name, location: l.source.location)
+        end
+      when AST::Members::ClassInstanceVariable
+        if r.source.instance_of?(AST::Members::ClassInstanceVariable) && l.declared_in == r.declared_in
+          raise ClassInstanceVariableDuplicationError.new(type_name: l.declared_in, variable_name: l.source.name, location: l.source.location)
+        end
+      when AST::Ruby::Members::InstanceVariableMember
+        if l.declared_in == r.declared_in
+          raise InstanceVariableDuplicationError.new(type_name: l.declared_in, variable_name: l.source.name, location: l.source.location)
+        end
+      end
     end
 
     def import_methods(definition, module_name, module_methods, interfaces_methods, subst, self_type_methods)
@@ -571,7 +655,7 @@ module RBS
 
         methods.each do |method|
           if interface_method_duplicates.include?(method.name)
-            member.is_a?(AST::Members::Include) || member.is_a?(AST::Members::Extend) or raise
+            (member.is_a?(AST::Members::Include) || member.is_a?(AST::Members::Extend)) or raise
 
             raise DuplicatedInterfaceMethodDefinitionError.new(
               type: definition.self_type,
@@ -624,14 +708,19 @@ module RBS
           )
         end
 
+        accessibility = special_accessibility(original.instance?, original.new_name) || original_method.accessibility
+
         method_definition = Definition::Method.new(
           super_method: existing_method,
           defs: original_method.defs.map do |defn|
             defn.update(defined_in: defined_in, implemented_in: implemented_in)
           end,
-          accessibility: original_method.accessibility,
-          alias_of: original_method
+          accessibility: accessibility,
+          alias_of: original_method,
+          alias_member: original
         )
+
+        method_definition.annotations.replace(original.annotations)
       when AST::Members::MethodDefinition
         if duplicated_method = methods[method.name]
           raise DuplicatedMethodDefinitionError.new(
@@ -646,18 +735,16 @@ module RBS
             type: subst.empty? ? overload.method_type : overload.method_type.sub(subst),
             member: original,
             defined_in: defined_in,
-            implemented_in: implemented_in,
-            overload_annotations: overload.annotations
-          )
+            implemented_in: implemented_in
+          ).tap do |type_def|
+            # Keep the original annotations given to overloads.
+            type_def.overload_annotations.replace(overload.annotations)
+          end
         end
 
-        # @type var accessibility: RBS::Definition::accessibility
-        accessibility =
-          if original.instance? && [:initialize, :initialize_copy, :initialize_clone, :initialize_dup, :respond_to_missing?].include?(method.name)
-            :private
-          else
-            method.accessibility
-          end
+        # Respect the visibility of the original method definition.
+        accessibility = original.visibility || special_accessibility(original.instance?, method.name) || method.accessibility
+
         # Skip setting up `super_method` if `implemented_in` is `nil`, that means the type doesn't have implementation.
         # This typically happens if the type is an interface.
         if implemented_in
@@ -668,8 +755,11 @@ module RBS
           super_method: super_method,
           defs: defs,
           accessibility: accessibility,
-          alias_of: nil
+          alias_of: nil,
+          alias_member: nil
         )
+
+        method_definition.annotations.replace(original.annotations)
       when AST::Members::AttrReader, AST::Members::AttrWriter, AST::Members::AttrAccessor
         if duplicated_method = methods[method.name]
           raise DuplicatedMethodDefinitionError.new(
@@ -707,6 +797,62 @@ module RBS
           super_method = existing_method
         end
 
+        # Respect the visibility of the original method definition.
+        accessibility = original.visibility || special_accessibility(original.kind == :instance, method.name) || method.accessibility
+
+        method_definition = Definition::Method.new(
+          super_method: super_method,
+          defs: [
+            Definition::Method::TypeDef.new(
+              type: method_type,
+              member: original,
+              defined_in: defined_in,
+              implemented_in: implemented_in
+            )
+          ],
+          accessibility: accessibility,
+          alias_of: nil,
+          alias_member: nil
+        )
+
+        method_definition.annotations.replace(original.annotations)
+      when AST::Ruby::Members::AttrReaderMember, AST::Ruby::Members::AttrWriterMember, AST::Ruby::Members::AttrAccessorMember
+        if duplicated_method = methods[method.name]
+          raise DuplicatedMethodDefinitionError.new(
+            type: definition.self_type,
+            method_name: method.name,
+            members: [*duplicated_method.members, original]
+          )
+        end
+
+        attr_type = original.type || Types::Bases::Any.new(location: nil)
+        method_type =
+          if method.name.to_s.end_with?("=")
+            # setter
+            MethodType.new(
+              type_params: [],
+              type: Types::Function.empty(attr_type).update(
+                required_positionals: [
+                  Types::Function::Param.new(type: attr_type, name: method.name.to_s.chomp("=").to_sym)
+                ]
+              ),
+              block: nil,
+              location: original.location
+            )
+          else
+            # getter
+            MethodType.new(
+              type_params: [],
+              type: Types::Function.empty(attr_type),
+              block: nil,
+              location: original.location
+            )
+          end
+
+        if implemented_in
+          super_method = existing_method
+        end
+
         method_definition = Definition::Method.new(
           super_method: super_method,
           defs: [
@@ -718,8 +864,55 @@ module RBS
             )
           ],
           accessibility: method.accessibility,
-          alias_of: nil
+          alias_of: nil,
+          alias_member: nil
         )
+
+        method_definition.annotations.replace([])
+      when AST::Ruby::Members::DefMember
+        if duplicated_method = methods[method.name]
+          raise DuplicatedMethodDefinitionError.new(
+            type: definition.self_type,
+            method_name: method.name,
+            members: [original, *duplicated_method.members]
+          )
+        end
+
+        if original.method_type.empty? && existing_method
+          # Unannotated method with a parent definition → inherit from the parent, like @rbs ...
+          method_definition = Definition::Method.new(
+            super_method: existing_method,
+            defs: existing_method.defs.map { |defn| defn.update(implemented_in: implemented_in) },
+            accessibility: :public,
+            alias_of: existing_method.alias_of,
+            alias_member: nil
+          )
+
+          method_definition.annotations.replace(existing_method.annotations)
+        else
+          defs = original.overloads.map do |overload|
+            Definition::Method::TypeDef.new(
+              type: subst.empty? ? overload.method_type : overload.method_type.sub(subst),
+              member: original,
+              defined_in: defined_in,
+              implemented_in: implemented_in
+            ).tap do |type_def|
+              # Keep the original annotations given to overloads.
+              type_def.overload_annotations.replace(overload.annotations)
+            end
+          end
+
+          method_definition = Definition::Method.new(
+            super_method: existing_method,
+            defs: defs,
+            accessibility: :public,
+            alias_of: nil,
+            alias_member: nil
+          )
+
+          method_definition.annotations.replace([])
+        end
+
       when nil
         # Overloading method definition only
 
@@ -746,8 +939,11 @@ module RBS
             defn.update(implemented_in: implemented_in)
           end,
           accessibility: existing_method.accessibility,
-          alias_of: existing_method.alias_of
+          alias_of: existing_method.alias_of,
+          alias_member: nil
         )
+
+        method_definition.annotations.replace(existing_method.annotations)
       end
 
       method.overloads.each do |overloading_def|
@@ -756,15 +952,28 @@ module RBS
             type: subst.empty? ? overload.method_type : overload.method_type.sub(subst),
             member: overloading_def,
             defined_in: defined_in,
-            implemented_in: implemented_in,
-            overload_annotations: overload.annotations
+            implemented_in: implemented_in
           )
+
+          type_def.overload_annotations.replace(overload.annotations)
 
           method_definition.defs.unshift(type_def)
         end
+
+        method_definition.annotations.concat(overloading_def.annotations)
+      end
+
+      method_definition.defs.each do |type_def|
+        type_def.member_annotations.replace(method_definition.annotations)
       end
 
       methods[method.name] = method_definition
+    end
+
+    def special_accessibility(is_instance, method_name)
+      if is_instance && [:initialize, :initialize_copy, :initialize_clone, :initialize_dup, :respond_to_missing?].include?(method_name)
+        :private
+      end
     end
 
     def try_cache(type_name, cache:)

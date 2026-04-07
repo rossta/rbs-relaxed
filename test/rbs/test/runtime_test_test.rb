@@ -20,6 +20,10 @@ class RBS::Test::RuntimeTestTest < Test::Unit::TestCase
   end
 
   def test_runtime_test_error_with_invalid_sample_size
+    # Skip this test if running under Valgrind because `RUBY_FREE_AT_EXIT` has a bug.
+    # See: https://bugs.ruby-lang.org/issues/21173
+    omit if ENV["RUBY_MEMCHECK_RUNNING"]
+
     string_err_msg = refute_test_success(other_env: {"RBS_TEST_SAMPLE_SIZE" => 'yes'})
     assert_match(/E, .+ ERROR -- rbs: Sample size should be a positive integer: `.+`\n/, string_err_msg)
 
@@ -93,6 +97,9 @@ RUBY
   end
 
   def test_test_target
+    # Skip this test if running under Valgrind because `RUBY_FREE_AT_EXIT` has a bug.
+    # See: https://bugs.ruby-lang.org/issues/21173
+    omit if ENV["RUBY_MEMCHECK_RUNNING"]
     output = refute_test_success(other_env: { "RBS_TEST_TARGET" => nil })
     assert_match "test/setup handles the following environment variables:", output
   end
@@ -135,6 +142,7 @@ RBS
   end
 
   def test_minitest
+    omit unless has_gem?("minitest-mock") && has_gem?("minitest")
     omit if skip_minitest?
 
     assert_test_success(other_env: { 'RBS_TEST_TARGET' => 'Foo', 'RBS_TEST_DOUBLE_SUITE' => 'minitest' }, rbs_content: <<RBS, ruby_content: <<RUBY)
@@ -149,6 +157,7 @@ class Foo
 end
 
 require "minitest/autorun"
+require "minitest/mock"
 
 class FooTest < Minitest::Test
   def test_foo_mock
